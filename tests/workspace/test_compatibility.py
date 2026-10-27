@@ -39,6 +39,7 @@ from core.layers.protocol_iq.protocolentities.wmex.iq_wmex_query import WmexQuer
 from core.layers.protocol_iq.protocolentities.wmex.iq_wmex_result import WmexResultIqProtocolEntity
 from core.structs import ProtocolTreeNode
 from core.layers.network.dispatcher.dispatcher_asyncio import AsyncioConnectionDispatcher
+from core.layers.network.dispatcher.dispatcher import ConnectionCallbacks
 from zargo.argo_message_decoder import ArgoMessageDecoder
 
 
@@ -218,12 +219,17 @@ class PairCodeHookTests(unittest.IsolatedAsyncioTestCase):
                 return b""
 
         layer.executeCommand.side_effect = execute
-        callbacks = SimpleNamespace(
-            getStack=lambda: SimpleNamespace(getProp=lambda key: SimpleNamespace(networkEnv=None)),
-            onRecvData=receive,
-            onDisconnected=mock.AsyncMock(),
-        )
-        dispatcher = AsyncioConnectionDispatcher(callbacks)
+        class Callbacks(ConnectionCallbacks):
+            def getStack(self):
+                return SimpleNamespace(getProp=lambda key: SimpleNamespace(networkEnv=None))
+
+            async def onRecvData(self, data):
+                await receive(data)
+
+            async def onDisconnected(self):
+                pass
+
+        dispatcher = AsyncioConnectionDispatcher(Callbacks())
         dispatcher._reader = Reader()
         try:
             await asyncio.wait_for(dispatcher._read_loop(), timeout=1)
@@ -305,6 +311,52 @@ class PairCodeLoggingTests(unittest.IsolatedAsyncioTestCase):
                 await ZowBotLayer.executeCommand(layer, "md.inputcode", ["TESTCODE"])
         self.assertNotIn("TESTCODE", "\n".join(captured.output))
         self.assertIn("RuntimeError", "\n".join(captured.output))
+
+
+class BotCancellationTests(unittest.IsolatedAsyncioTestCase):
+    def bot_without_account(self):
+        """Use real lifecycle methods with an offline stack and no constructor I/O."""
+        properties = {}
+
+        async def idle_commands():
+            await asyncio.Future()
+
+        stack = SimpleNamespace(
+            getLoop=lambda: None,
+            broadcastEvent=mock.AsyncMock(),
+            loop=mock.AsyncMock(),
+        )
+        bot = ZowBot.__new__(ZowBot)
+        bot.botId = None
+        bot._command_queue = None
+        bot._command_runner_loop = idle_commands
+        bot._cmd_args_for_exec = None
+        bot._exit_code = None
+        bot.inloop = False
+        bot._stack = stack
+        bot.botLayer = SimpleNamespace(
+            getStack=lambda: stack,
+            getProp=lambda key: properties.get(key),
+            setProp=lambda key, value: properties.__setitem__(key, value),
+            pairing=SimpleNamespace(stop_workspace_pairing=mock.AsyncMock()),
+        )
+        return bot, stack, properties
+
+    async def test_quit_before_run_never_connects(self):
+        bot, stack, properties = self.bot_without_account()
+        bot.quit()
+        self.assertTrue(properties["USER_REQUEST_QUIT"])
+        await asyncio.wait_for(bot._async_run(), timeout=1)
+        stack.broadcastEvent.assert_not_awaited()
+        stack.loop.assert_not_awaited()
+        bot.botLayer.pairing.stop_workspace_pairing.assert_awaited_once()
+
+    async def test_pending_successful_exit_never_connects(self):
+        bot, stack, properties = self.bot_without_account()
+        bot._exit_code = 0
+        self.assertEqual(await asyncio.wait_for(bot._async_run(), timeout=1), 0)
+        stack.broadcastEvent.assert_not_awaited()
+        stack.loop.assert_not_awaited()
 
 
 if __name__ == "__main__":

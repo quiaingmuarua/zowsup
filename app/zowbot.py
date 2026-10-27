@@ -333,7 +333,11 @@ class ZowBot:
         
         try:
             while True:                     
-                try :                                        
+                try :
+                    # A parent may cancel before run() creates the event loop.
+                    # Never begin/retry a connection after an exit was requested.
+                    if self._exit_code is not None or self.botLayer.getProp("USER_REQUEST_QUIT"):
+                        break
                     self.inloop = True                                  
                     await self._stack.broadcastEvent(YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))                                                  
 
@@ -478,11 +482,12 @@ class ZowBot:
 
     def disconnect(self):        
         """Disconnect the bot. Use quit() instead for external thread calls."""
+        # Publish cancellation synchronously, before scheduling async cleanup.
+        self.status = ZowBotStatus.STATUS_STOPPING
+        self.botLayer.setProp("USER_REQUEST_QUIT", True)
         loop = self.botLayer.getStack().getLoop()
         if loop is None or loop.is_closed():
-            # Event loop unavailable — set stop flags directly
-            self.status = ZowBotStatus.STATUS_STOPPING
-            self.botLayer.setProp("USER_REQUEST_QUIT", True)
+            # No connection can be started by a later run() after this point.
             return
         try:
             future = asyncio.run_coroutine_threadsafe(self._async_disconnect(), loop)
