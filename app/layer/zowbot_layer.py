@@ -233,13 +233,23 @@ class ZowBotLayer(YowInterfaceLayer):
                 f"Command '{command_name}' not found. Available commands: {available[:100]}..."
             )
         cmd_func = self.bot.cmdList[command_name]
-        self.logger.debug(f"Executing command: {command_name} with params={params}, options={options}")
+        sensitive_command = command_name == "md.inputcode"
+        if sensitive_command:
+            self.logger.debug("Executing command: md.inputcode (parameters omitted)")
+        else:
+            self.logger.debug(f"Executing command: {command_name} with params={params}, options={options}")
         try:
             result = await cmd_func(params, options)
-            self.logger.debug(f"Command '{command_name}' result: {result}")
+            if sensitive_command:
+                self.logger.debug("Command 'md.inputcode' completed")
+            else:
+                self.logger.debug(f"Command '{command_name}' result: {result}")
             return result
         except Exception as e:
-            self.logger.error(f"Command '{command_name}' failed: {e}")
+            if sensitive_command:
+                self.logger.error("Command 'md.inputcode' failed: %s", type(e).__name__)
+            else:
+                self.logger.error(f"Command '{command_name}' failed: {e}")
             raise
 
     def callback(self, event=None, message=None, messageStatus=None, cmdResult=None, modeResult=None):

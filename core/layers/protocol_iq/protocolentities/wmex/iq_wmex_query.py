@@ -3,6 +3,7 @@ from typing import Optional, Any, List, Dict, Union
 from ..iq import IqProtocolEntity
 from .....common import YowConstants
 from .iq_wmex_result import WmexResultIqProtocolEntity
+from pathlib import Path
 import json
 class WmexQueryIqProtocolEntity(IqProtocolEntity):
 
@@ -32,7 +33,7 @@ class WmexQueryIqProtocolEntity(IqProtocolEntity):
 
     @staticmethod
     def loadDict():
-        with open("data/mex_argo_dict.json", encoding='utf8') as f:            
+        with (Path(__file__).resolve().parents[5] / "data" / "mex_argo_dict.json").open(encoding='utf8') as f:
             rawJson = json.loads(f.read())
             WmexQueryIqProtocolEntity._queryIdMap = {k: str(v["doc_id"]) for k, v in rawJson.items()}
             

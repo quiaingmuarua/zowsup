@@ -60,6 +60,7 @@ class PairingManager:
         self.status = None  # e.g. "WAIT_PAIRINGCODE"
         self.code = None  # pairing code input
         self.companion_hello_entity = None
+        self._workspace_pair_code_attempted = False
         self.wa_fbid = None  # Facebook ID from CanonicalEntCredentials
         self.canonical_password = None  # Stored password from WWWCreateUser
 
@@ -454,6 +455,15 @@ class PairingManager:
 
     async def _handle_linkcode_companion_hello(self, entity):
         """LinkCode stage: companion_hello — wait for pairing code input."""
+        bot = self.layer.bot
+        workspace_code = getattr(bot, "workspace_pair_code", None)
+        use_workspace_code = bot.bot_type != ZowBotType.TYPE_RUN_TEMP and workspace_code is not None
+        if use_workspace_code:
+            if self._workspace_pair_code_attempted:
+                return
+            if not isinstance(workspace_code, str) or not workspace_code.strip():
+                raise ValueError("workspace_pair_code must be a non-empty string")
+
         logger.info("ENTERING WAITING CODE STATUS")
         self.status = "WAIT_PAIRINGCODE"
         self.companion_hello_entity = entity
@@ -463,6 +473,11 @@ class PairingManager:
         if self.layer.bot.bot_type == ZowBotType.TYPE_RUN_TEMP:
             # Auto-input pairing code for temporary mode
             await self.layer.executeCommand("md.inputcode", ["AAAAAA"])
+        elif use_workspace_code:
+            # Set before awaiting: duplicate notifications must not replay pairing,
+            # including after a failed or cancelled attempt on this bot instance.
+            self._workspace_pair_code_attempted = True
+            await self.layer.executeCommand("md.inputcode", [workspace_code])
 
     async def _handle_linkcode_companion_finish(self, entity):
         """LinkCode stage: companion_finish — key exchange and pair device."""

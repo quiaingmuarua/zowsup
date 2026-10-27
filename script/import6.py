@@ -89,15 +89,7 @@ class Import6(ConsoleMain):
 
         c.execute(q, (pubKey,privKey))
         db._store.identityKeyStore.dbConn.commit()        
-        jsonstr = DictJsonTransform().transform(ConfigSerialize(config.__class__).serialize(config))
-        publicKey = Utils.b64str(pubKey)
-        privateKey = Utils.b64str(privKey)   
-        logger.info("===PART1-REGKEYS===")
-        logger.info(db.registration_id)
-        logger.info(publicKey)  
-        logger.info(privateKey)                  
-        logger.info("===PART2-PROFILE===")
-        logger.info(jsonstr)        
+        logger.info("Account profile import complete")
 
         
 if __name__ == "__main__":    

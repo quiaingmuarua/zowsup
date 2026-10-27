@@ -17,6 +17,7 @@ import logging.handlers
 import sys
 import os
 from pathlib import Path
+from conf.constants import SysVar
 
 
 # ============================================================================
@@ -157,6 +158,7 @@ def setup_logging(level=None, enable_file=False, module_name_mode=None, log_file
     # 清除现有处理器（防止重复）
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
+        handler.close()
     
     root_logger.setLevel(log_level)
     
@@ -174,8 +176,8 @@ def setup_logging(level=None, enable_file=False, module_name_mode=None, log_file
     # ========================================================================
     if enable_file:
         # 创建日志目录
-        log_path = Path(LOG_DIR)
-        log_path.mkdir(exist_ok=True)
+        log_path = Path(getattr(SysVar, "LOG_PATH", None) or LOG_DIR)
+        log_path.mkdir(parents=True, exist_ok=True)
 
         # log_file_name 参数优先，否则使用模块级 LOG_FILE 常量
         effective_log_file = log_file_name if log_file_name else LOG_FILE

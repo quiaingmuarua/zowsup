@@ -2,6 +2,7 @@ from ..iq import IqProtocolEntity
 from typing import Optional, Any, List, Dict, Union
 from .....common import YowConstants
 from zargo.argo_message_decoder import ArgoMessageDecoder
+from pathlib import Path
 import base64,json,logging
 from zargo.utils.jid import Jid
 
@@ -63,7 +64,9 @@ class WmexResultIqProtocolEntity(IqProtocolEntity):
                 if query_name=="BizIntegrityQuery":
                     data= data.replace(b"\x01\x02\x02",b"\x01\x00\x02") #little temp patch to ignore some weird fields in integrity_tags formats
                 if query_name is not None:
-                    ArgoMessageDecoder.setSchemaFile("data/whatsapp-android-mex_argo_wire_types.argo")
+                    ArgoMessageDecoder.setSchemaFile(str(
+                        Path(__file__).resolve().parents[5] / "data" / "whatsapp-android-mex_argo_wire_types.argo"
+                    ))
                     
                     obj = ArgoMessageDecoder.decodeMessage(query_name,data)                    
                     res = json.dumps(obj,cls=BytesEncoder)                   

@@ -434,7 +434,7 @@ class Utils:
 
     @staticmethod
     def getMobileCC(mobile) -> Any:
-        with open("data/mcc_mnc.json", encoding='utf8') as f:            
+        with (Path(__file__).resolve().parents[1] / "data" / "mcc_mnc.json").open(encoding='utf8') as f:
             list =json.loads(f.read())
         map = {}
         for item in list:

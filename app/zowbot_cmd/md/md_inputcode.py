@@ -51,7 +51,7 @@ class Cmd_Md_InputCode(BotCommand):
                 return self.success()
                         
             except Exception as e:
-                logger.error(f"Error during pairing process: {e}")
+                logger.error("Error during pairing process: %s", type(e).__name__)
                 return self.fail(error=str(e))
 
 

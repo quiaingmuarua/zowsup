@@ -70,6 +70,8 @@ class ZowBot:
                     
     def __init__(self,bot_id,env,bot_type=ZowBotType.TYPE_RUN_SINGLETON,auto=False):     
         self.botId = bot_id                
+        # Optional workspace integration: supply before run(), never infer a code.
+        self.workspace_pair_code: str | None = None
         self.logger = logging.getLogger(("BOT-"+self.botId) if self.botId is not None else __name__)
         stackBuilder = YowStackBuilder()
         self.botLayer = ZowBotLayer(self)        
