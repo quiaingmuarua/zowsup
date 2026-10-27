@@ -30,6 +30,7 @@ sys.addaudithook(reject_network)
 
 from app.layer.pairing import PairingManager
 from app.layer.zowbot_layer import ZowBotLayer
+from app.zowbot import ZowBot
 from app.zowbot_values import ZowBotType
 from common.utils import Utils
 from conf.constants import SysVar
@@ -37,6 +38,7 @@ from conf.logging_config import setup_logging
 from core.layers.protocol_iq.protocolentities.wmex.iq_wmex_query import WmexQueryIqProtocolEntity
 from core.layers.protocol_iq.protocolentities.wmex.iq_wmex_result import WmexResultIqProtocolEntity
 from core.structs import ProtocolTreeNode
+from core.layers.network.dispatcher.dispatcher_asyncio import AsyncioConnectionDispatcher
 from zargo.argo_message_decoder import ArgoMessageDecoder
 
 
@@ -107,6 +109,34 @@ class LoggingLocationTests(unittest.TestCase):
             root_logger.setLevel(original_level)
 
 
+class ConfigEncodingTests(unittest.TestCase):
+    def test_bom_config_loads_with_only_temporary_runtime_directories(self):
+        with tempfile.TemporaryDirectory(prefix="zowsup-config-") as directory:
+            root = Path(directory)
+            values = {"PLATFORM": "windows" if sys.platform == "win32" else "linux",
+                      "PYTHON": sys.executable, "DEFAULT_ENV": "android"}
+            for key, name in (
+                ("ACCOUNT_PATH", "account"), ("TMP_ACCOUNT_PATH", "tmp-account"),
+                ("DOWNLOAD_PATH", "download"), ("UPLOAD_PATH", "upload"),
+                ("LOG_PATH", "logs"), ("TASK_PATH", "task"),
+            ):
+                values[key] = (root / "runtime" / name).as_posix() + "/"
+            config = root / "with-bom.conf"
+            config.write_text(
+                "[SysVar]\n" + "".join(f"{key}={value}\n" for key, value in values.items()),
+                encoding="utf-8-sig",
+            )
+            self.assertTrue(config.read_bytes().startswith(b"\xef\xbb\xbf"))
+            self.assertFalse((root / "runtime").exists())
+            restored_names = {*values, "BASE_URL", "HTTP_URL", "CMD_WAIT"}
+            with mock.patch.multiple(SysVar, create=True, **{name: None for name in restored_names}):
+                self.assertTrue(SysVar.loadConfig(str(config)))
+                for key, value in values.items():
+                    self.assertEqual(getattr(SysVar, key), value)
+                self.assertTrue((root / "runtime" / "account" / "device").is_dir())
+                self.assertTrue((root / "runtime" / "logs").is_dir())
+
+
 class PairCodeHookTests(unittest.IsolatedAsyncioTestCase):
     def manager(self, code=None, bot_type=ZowBotType.TYPE_RUN_SINGLETON):
         layer = SimpleNamespace(
@@ -122,7 +152,7 @@ class PairCodeHookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager.status, "WAIT_PAIRINGCODE")
         layer.executeCommand.assert_not_awaited()
 
-    async def test_code_is_awaited_in_existing_loop_and_duplicates_are_ignored(self):
+    async def test_code_runs_in_existing_loop_and_duplicates_are_ignored(self):
         manager, layer = self.manager("TESTCODE")
         started, release = asyncio.Event(), asyncio.Event()
         current_loop = asyncio.get_running_loop()
@@ -134,24 +164,109 @@ class PairCodeHookTests(unittest.IsolatedAsyncioTestCase):
 
         layer.executeCommand.side_effect = execute
         first_entity = object()
-        first = asyncio.create_task(manager._handle_linkcode_companion_hello(first_entity))
+        await manager._handle_linkcode_companion_hello(first_entity)
+        task = manager._workspace_pair_code_task
         try:
             await asyncio.wait_for(started.wait(), timeout=1)
-            self.assertFalse(first.done())
+            self.assertFalse(task.done())
             await asyncio.wait_for(manager._handle_linkcode_companion_hello(object()), timeout=1)
             self.assertIs(manager.companion_hello_entity, first_entity)
         finally:
             release.set()
-            await asyncio.wait_for(first, timeout=1)
+            await asyncio.wait_for(task, timeout=1)
         layer.executeCommand.assert_awaited_once_with("md.inputcode", ["TESTCODE"])
 
     async def test_failed_attempt_is_not_retried_by_another_notification(self):
         manager, layer = self.manager("TESTCODE")
-        layer.executeCommand.side_effect = RuntimeError("synthetic failure")
-        with self.assertRaises(RuntimeError):
+        layer.executeCommand.side_effect = RuntimeError("synthetic TESTCODE failure")
+        with self.assertLogs("app.layer.pairing", level="ERROR") as captured:
             await manager._handle_linkcode_companion_hello(object())
+            await manager._workspace_pair_code_task
+        self.assertNotIn("TESTCODE", "\n".join(captured.output))
         layer.bot.workspace_pair_code = "NEXTCODE"
         await manager._handle_linkcode_companion_hello(object())
+        layer.executeCommand.assert_awaited_once()
+
+    async def test_sequential_reader_can_receive_the_iq_reply(self):
+        """The real dispatcher cannot read frame 2 until frame 1's handler returns."""
+        manager, layer = self.manager("TESTCODE")
+        command_started = asyncio.Event()
+        iq_reply = asyncio.get_running_loop().create_future()
+        received = []
+
+        async def execute(command, params):
+            command_started.set()
+            await iq_reply
+
+        async def receive(data):
+            received.append(data)
+            if data == b"companion_hello":
+                await manager._handle_linkcode_companion_hello(object())
+            elif data == b"iq_result":
+                iq_reply.set_result({"status": "ok"})
+
+        class Reader:
+            calls = 0
+
+            async def read(self, size):
+                self.calls += 1
+                if self.calls == 1:
+                    return b"companion_hello"
+                if self.calls == 2:
+                    await command_started.wait()
+                    return b"iq_result"
+                return b""
+
+        layer.executeCommand.side_effect = execute
+        callbacks = SimpleNamespace(
+            getStack=lambda: SimpleNamespace(getProp=lambda key: SimpleNamespace(networkEnv=None)),
+            onRecvData=receive,
+            onDisconnected=mock.AsyncMock(),
+        )
+        dispatcher = AsyncioConnectionDispatcher(callbacks)
+        dispatcher._reader = Reader()
+        try:
+            await asyncio.wait_for(dispatcher._read_loop(), timeout=1)
+            self.assertEqual(received, [b"companion_hello", b"iq_result"])
+            await asyncio.wait_for(manager._workspace_pair_code_task, timeout=1)
+            layer.executeCommand.assert_awaited_once_with("md.inputcode", ["TESTCODE"])
+        finally:
+            await manager.stop_workspace_pairing()
+
+    async def test_bot_shutdown_cancels_and_joins_pending_pairing(self):
+        manager, layer = self.manager("TESTCODE")
+        started, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def execute(command, params):
+            started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        async def idle_commands():
+            await asyncio.Future()
+
+        layer.executeCommand.side_effect = execute
+        await manager._handle_linkcode_companion_hello(object())
+        task = manager._workspace_pair_code_task
+        await asyncio.wait_for(started.wait(), timeout=1)
+        bot = SimpleNamespace(
+            botId=None,
+            _command_queue=None,
+            _command_runner_loop=idle_commands,
+            _cmd_args_for_exec=None,
+            _exit_code=None,
+            _stack=SimpleNamespace(broadcastEvent=mock.AsyncMock(), loop=mock.AsyncMock()),
+            botLayer=SimpleNamespace(pairing=manager, getProp=lambda key: key == "QUITTED"),
+        )
+        await asyncio.wait_for(ZowBot._async_run(bot), timeout=1)
+        self.assertTrue(cancelled.is_set())
+        self.assertTrue(task.cancelled())
+        self.assertIsNone(manager._workspace_pair_code_task)
+        await manager._handle_linkcode_companion_hello(object())
+        self.assertIsNone(manager._workspace_pair_code_task)
         layer.executeCommand.assert_awaited_once()
 
     async def test_invalid_explicit_value_fails_without_running_a_command(self):

@@ -61,6 +61,7 @@ class PairingManager:
         self.code = None  # pairing code input
         self.companion_hello_entity = None
         self._workspace_pair_code_attempted = False
+        self._workspace_pair_code_task = None
         self.wa_fbid = None  # Facebook ID from CanonicalEntCredentials
         self.canonical_password = None  # Stored password from WWWCreateUser
 
@@ -474,10 +475,39 @@ class PairingManager:
             # Auto-input pairing code for temporary mode
             await self.layer.executeCommand("md.inputcode", ["AAAAAA"])
         elif use_workspace_code:
-            # Set before awaiting: duplicate notifications must not replay pairing,
-            # including after a failed or cancelled attempt on this bot instance.
+            # The receive loop awaits this handler. Waiting here for an IQ response
+            # would prevent that same loop from reading it. Keep the command in a
+            # tracked task on this loop, and consume the attempt before scheduling.
             self._workspace_pair_code_attempted = True
-            await self.layer.executeCommand("md.inputcode", [workspace_code])
+            self._workspace_pair_code_task = asyncio.create_task(
+                self._submit_workspace_pair_code(workspace_code),
+                name="zowsup-workspace-pair-code",
+            )
+
+    async def _submit_workspace_pair_code(self, code):
+        try:
+            await self.layer.executeCommand("md.inputcode", [code])
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # Do not leave an unobserved task exception or log pairing material.
+            logger.error("Workspace pairing command failed: %s", type(error).__name__)
+
+    async def stop_workspace_pairing(self):
+        """Cancel and join this bot's pairing task during bot shutdown."""
+        # Also prevent late notifications from starting a new task while closing.
+        self._workspace_pair_code_attempted = True
+        task = self._workspace_pair_code_task
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._workspace_pair_code_task = None
 
     async def _handle_linkcode_companion_finish(self, entity):
         """LinkCode stage: companion_finish — key exchange and pair device."""

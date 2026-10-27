@@ -381,6 +381,7 @@ class ZowBot:
         finally:
             # Clean up command runner task (only if event loop is still running)
             try:
+                await self.botLayer.pairing.stop_workspace_pairing()
                 if not command_runner_task.done():
                     command_runner_task.cancel()
                     try:

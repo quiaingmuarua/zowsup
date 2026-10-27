@@ -41,7 +41,7 @@ class SysVar:
         configFile = Path(path)    
         if configFile.exists():    
             conf = configparser.ConfigParser()          
-            conf.read(path, encoding='utf-8')
+            conf.read(path, encoding='utf-8-sig')
             SysVar.PLATFORM = conf.get("SysVar", "PLATFORM")
             SysVar.PYTHON = conf.get("SysVar", "PYTHON")
             SysVar.ACCOUNT_PATH = conf.get("SysVar", "ACCOUNT_PATH",fallback="/data/account/")            
